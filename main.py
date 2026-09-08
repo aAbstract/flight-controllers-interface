@@ -8,13 +8,18 @@ from lib import (
     FJS_Axes_State,
     FJS_Hats_State,
 
-    elog,
+    Sensors_State,
+
+    Plane_MDBus_Device,
+
+    Log,
+    Clock
 )
 
 
 def fjs_connect():
     if pygame.joystick.get_count() == 0:
-        elog('No Flight JoyStick Device Detected')
+        Log.elog('No Flight JoyStick Device Detected')
         sys.exit(1)
     fjs_device = pygame.joystick.Joystick(0)
     fjs_device.init()
@@ -22,11 +27,8 @@ def fjs_connect():
 
 
 def capture_controls(fjs_device: pygame.joystick.JoystickType) -> FJS_State:
-    if not hasattr(capture_controls, 'epoch_ns'):
-        capture_controls.epoch_ns = time.monotonic_ns()
-
     fjs_state = {
-        'timestamp_ms': (time.monotonic_ns() - capture_controls.epoch_ns) // 1_000_000,
+        'timestamp_ms': Clock.get_time_ms(),
         'fjs_buttons_state': {},
         'fjs_axes_state': {},
         'fjs_hats_state': {},
@@ -59,8 +61,19 @@ def capture_controls(fjs_device: pygame.joystick.JoystickType) -> FJS_State:
     )
 
 
-def process_controls(fjs_state: FJS_State):
-    pass
+def capture_sensors(plane_mdbus_device: Plane_MDBus_Device) -> Sensors_State:
+    return Sensors_State(
+        timestamp_ms=Clock.get_time_ms(),
+        lvdts_state=plane_mdbus_device.load_lvdts(),
+        limit_switches_state=plane_mdbus_device.load_limit_switches(),
+    )
+
+
+def process_controls(fjs_state: FJS_State, sensors_state: Sensors_State):
+    print('FJS_State:')
+    print(fjs_state.to_json_str())
+    print('Sensors_State:')
+    print(sensors_state.to_json_str())
 
 
 def send_plane_commands():
@@ -72,10 +85,18 @@ def main():
     pygame.joystick.init()
     fjs_device = fjs_connect()
 
+    plane_mdbus_device = Plane_MDBus_Device(port_name='/dev/ttyS90', slave_id=0x01)
+    plane_mdbus_device.connect()
+
     while True:
         fjs_state = capture_controls(fjs_device)
-        process_controls(fjs_state)
-        time.sleep(0.01)
+        sensors_state = capture_sensors(plane_mdbus_device)
+        if fjs_state == None or sensors_state == None:
+            sys.exit(1)
+
+        process_controls(fjs_state, sensors_state)
+
+        time.sleep(1)
 
 
 if __name__ == "__main__":
