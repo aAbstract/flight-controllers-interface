@@ -1,6 +1,6 @@
 import time
 import json
-from enum import Enum
+from enum import IntEnum
 from serial import Serial
 from typing import ClassVar
 from dataclasses import dataclass, asdict
@@ -12,13 +12,13 @@ from ctypes import (
 from libzcom_mdbus_ffi import _libs
 
 
-class V_TRIState(Enum):
+class V_TRIState(IntEnum):
     MID = 0
     UP = 1
     DOWN = 2
 
 
-class R_TRIState(Enum):
+class R_TRIState(IntEnum):
     MID = 0
     CCW = 1
     CW = 2
@@ -39,17 +39,17 @@ class FJS_Buttons_State:
         9: 'flaps_lever_B4',
     }
 
-    side_stick_f1: bool
-    side_stick_f2: bool
-    side_stick_b1: bool
-    side_stick_b2: bool
+    side_stick_f1: bool = False
+    side_stick_f2: bool = False
+    side_stick_b1: bool = False
+    side_stick_b2: bool = False
 
-    flaps_lever_X: bool
-    flaps_lever_A: bool
-    flaps_lever_B: bool
-    flaps_lever_Y: bool
-    flaps_lever_B3: bool
-    flaps_lever_B4: bool
+    flaps_lever_X: bool = False
+    flaps_lever_A: bool = False
+    flaps_lever_B: bool = False
+    flaps_lever_Y: bool = False
+    flaps_lever_B3: bool = False
+    flaps_lever_B4: bool = False
 
     def to_json_str(self):
         return json.dumps(asdict(self), indent=2)
@@ -70,16 +70,16 @@ class FJS_Axes_State:
         6: 'rudder_twist',
     }
 
-    side_stick_x: float
-    side_stick_y: float
-    side_stick_z: float
+    side_stick_x: float = 0.0
+    side_stick_y: float = 0.0
+    side_stick_z: float = 0.0
 
-    flaps_lever_primary: float
-    flaps_lever_secondary: float
+    flaps_lever_primary: float = 0.0
+    flaps_lever_secondary: float = 0.0
 
-    rudder_right: float
-    rudder_left: float
-    rudder_twist: float
+    rudder_right: float = 0.0
+    rudder_left: float = 0.0
+    rudder_twist: float = 0.0
 
     def to_json_str(self):
         return json.dumps(asdict(self), indent=2)
@@ -91,7 +91,7 @@ class FJS_Hats_State:
         0: 'side_stick_hat',
     }
 
-    side_stick_hat: tuple[int, int]
+    side_stick_hat: tuple[int, int] = (0, 0)
 
     def to_json_str(self):
         return json.dumps(asdict(self), indent=2)
@@ -99,10 +99,10 @@ class FJS_Hats_State:
 
 @dataclass
 class FJS_State:
-    timestamp_ms: int
-    fjs_buttons_state: FJS_Buttons_State
-    fjs_axes_state: FJS_Axes_State
-    fjs_hats_state: FJS_Hats_State
+    timestamp_ms: int = 0
+    fjs_buttons_state: FJS_Buttons_State = FJS_Buttons_State()
+    fjs_axes_state: FJS_Axes_State = FJS_Axes_State()
+    fjs_hats_state: FJS_Hats_State = FJS_Hats_State()
 
     def to_json_str(self):
         return json.dumps(asdict(self), indent=2)
@@ -122,15 +122,15 @@ class LVDTs_State:
         7: 'lv_flap_4',
     }
 
-    lv_spoiler_1: float
-    lv_spoiler_2: float
-    lv_spoiler_3: float
-    lv_spoiler_4: float
+    lv_spoiler_1: float = 0.0
+    lv_spoiler_2: float = 0.0
+    lv_spoiler_3: float = 0.0
+    lv_spoiler_4: float = 0.0
 
-    lv_flap_1: float
-    lv_flap_2: float
-    lv_flap_3: float
-    lv_flap_4: float
+    lv_flap_1: float = 0.0
+    lv_flap_2: float = 0.0
+    lv_flap_3: float = 0.0
+    lv_flap_4: float = 0.0
 
     def to_json_str(self):
         return json.dumps(asdict(self), indent=2)
@@ -147,12 +147,26 @@ class Limit_Switches_State:
         5: 'limit_switch_6',
     }
 
-    limit_switch_1: bool
-    limit_switch_2: bool
-    limit_switch_3: bool
-    limit_switch_4: bool
-    limit_switch_5: bool
-    limit_switch_6: bool
+    limit_switch_1: bool = False
+    limit_switch_2: bool = False
+    limit_switch_3: bool = False
+    limit_switch_4: bool = False
+    limit_switch_5: bool = False
+    limit_switch_6: bool = False
+
+    def to_json_str(self):
+        return json.dumps(asdict(self), indent=2)
+
+
+@dataclass
+class Levers_State:
+    Levers_Idx_Map: ClassVar[dict[int, str]] = {
+        0: 'landing_gear_lever',
+        1: 'spoilers_lever',
+    }
+
+    landing_gear_lever: V_TRIState = V_TRIState.MID
+    spoilers_lever: V_TRIState = V_TRIState.MID
 
     def to_json_str(self):
         return json.dumps(asdict(self), indent=2)
@@ -160,9 +174,10 @@ class Limit_Switches_State:
 
 @dataclass
 class Sensors_State:
-    timestamp_ms: int
-    lvdts_state: LVDTs_State
-    limit_switches_state: Limit_Switches_State
+    timestamp_ms: int = 0
+    lvdts_state: LVDTs_State = LVDTs_State()
+    limit_switches_state: Limit_Switches_State = Limit_Switches_State()
+    levers_state: Levers_State = Levers_State()
 
     def to_json_str(self):
         return json.dumps(asdict(self), indent=2)
@@ -170,13 +185,21 @@ class Sensors_State:
 
 @dataclass
 class Plane_Commands:
-    right_ailerons: V_TRIState
-    left_ailerons: V_TRIState
-    elevators: V_TRIState
-    flaps_deg: int
-    rudder: R_TRIState
-    landing_gear: V_TRIState
-    spoilers_deg: tuple[int, int, int, int, int]
+    right_ailerons: V_TRIState = V_TRIState.MID
+    left_ailerons: V_TRIState = V_TRIState.MID
+    elevators: V_TRIState = V_TRIState.MID
+    flaps_deg: int = 0
+    rudder: R_TRIState = R_TRIState.MID
+    landing_gear: V_TRIState = V_TRIState.MID
+    right_spoiler_deg: int = 0
+    left_spoiler_deg: int = 0
+
+    def set_spoilers(self, deg: int):
+        self.right_spoiler_deg = deg
+        self.left_spoiler_deg = deg
+
+    def to_json_str(self):
+        return json.dumps(asdict(self), indent=2)
 
 
 class Plane_MDBus_Device:
@@ -252,7 +275,7 @@ class Plane_MDBus_Device:
             Plane_MDBus_Device.elog('Device is not Connected')
             return None
 
-        lvdts_payload = self._mdbus_read_req(0xD0, 8)
+        lvdts_payload = self._mdbus_read_req(4096, 8)
         if not lvdts_payload:
             Plane_MDBus_Device.elog('Empty MDBus Response')
             return None
@@ -274,7 +297,7 @@ class Plane_MDBus_Device:
             Plane_MDBus_Device.elog('Device is not Connected')
             return None
 
-        limit_switches_payload = self._mdbus_read_req(0xD8, 1)
+        limit_switches_payload = self._mdbus_read_req(4104, 1)
         if not limit_switches_payload:
             Plane_MDBus_Device.elog('Empty MDBus Response')
             return None
@@ -290,6 +313,28 @@ class Plane_MDBus_Device:
             limit_switches_state[limit_switch_name] = b == '1'
 
         return Limit_Switches_State(**limit_switches_state)
+
+    def load_levers(self) -> Levers_State:
+        if not self.serial_port:
+            Plane_MDBus_Device.elog('Device is not Connected')
+            return None
+
+        levers_payload = self._mdbus_read_req(4115, 2)
+        if not levers_payload:
+            Plane_MDBus_Device.elog('Empty MDBus Response')
+            return None
+
+        levers_state = {}
+        for i in range(2):
+            lever_name = Levers_State.Levers_Idx_Map.get(i)
+            if not lever_name:
+                continue
+
+            word = bytes([levers_payload[2 * i], levers_payload[2 * i + 1]])
+            lever_state = int.from_bytes(word, 'big')
+            levers_state[lever_name] = V_TRIState(lever_state)
+
+        return Levers_State(**levers_state)
 
 
 class Log:
@@ -318,3 +363,7 @@ class Clock:
 
     def get_time_ms() -> int:
         return (time.monotonic_ns() - Clock.epoch_ns) // 1_000_000
+
+
+class Conf:
+    Axis_Thresh = 0.1

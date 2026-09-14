@@ -1,6 +1,7 @@
 import sys
 import time
 import pygame
+from typing import Literal
 
 from lib import (
     FJS_State,
@@ -11,9 +12,14 @@ from lib import (
     Sensors_State,
 
     Plane_MDBus_Device,
+    Plane_Commands,
+
+    V_TRIState,
+    R_TRIState,
 
     Log,
-    Clock
+    Clock,
+    Conf,
 )
 
 
@@ -24,6 +30,19 @@ def fjs_connect():
     fjs_device = pygame.joystick.Joystick(0)
     fjs_device.init()
     return fjs_device
+
+
+def calibrate_controls(fjs_device: pygame.joystick.JoystickType):
+    def read_axes_set() -> set[float]:
+        pygame.event.pump()
+        axes_cnt = fjs_device.get_numaxes()
+        axes_set = set([fjs_device.get_axis(x) for x in range(axes_cnt)])
+        return axes_set
+
+    while read_axes_set() == {-1}:
+        Log.elog('Flight JoyStick Device is not Calibrated, Move Side Stick to Calibrate')
+        time.sleep(1)
+    Log.ilog('Flight JoyStick Device Calibrated')
 
 
 def capture_controls(fjs_device: pygame.joystick.JoystickType) -> FJS_State:
@@ -62,21 +81,125 @@ def capture_controls(fjs_device: pygame.joystick.JoystickType) -> FJS_State:
 
 
 def capture_sensors(plane_mdbus_device: Plane_MDBus_Device) -> Sensors_State:
+    lvdts_state = plane_mdbus_device.load_lvdts()
+    if not lvdts_state:
+        return None
+
+    limit_switches_state = plane_mdbus_device.load_limit_switches()
+    if not limit_switches_state:
+        return None
+
+    levers_state = plane_mdbus_device.load_levers()
+    if not levers_state:
+        return None
+
     return Sensors_State(
         timestamp_ms=Clock.get_time_ms(),
         lvdts_state=plane_mdbus_device.load_lvdts(),
         limit_switches_state=plane_mdbus_device.load_limit_switches(),
+        levers_state=plane_mdbus_device.load_levers(),
     )
 
 
-def process_controls(fjs_state: FJS_State, sensors_state: Sensors_State):
-    print('FJS_State:')
-    print(fjs_state.to_json_str())
-    print('Sensors_State:')
-    print(sensors_state.to_json_str())
+def create_plane_commands(fjs_state: FJS_State, sensors_state: Sensors_State) -> Plane_Commands:
+    plane_commands = Plane_Commands()
+
+    # ailerons control
+    if fjs_state.fjs_axes_state.side_stick_x > Conf.Axis_Thresh:  # side_stick: right
+        plane_commands.right_ailerons = V_TRIState.UP
+        plane_commands.left_ailerons = V_TRIState.DOWN
+    elif fjs_state.fjs_axes_state.side_stick_x < -Conf.Axis_Thresh:  # side_stick: left
+        plane_commands.right_ailerons = V_TRIState.DOWN
+        plane_commands.left_ailerons = V_TRIState.UP
+    elif fjs_state.fjs_axes_state.side_stick_x > -Conf.Axis_Thresh and fjs_state.fjs_axes_state.side_stick_x < Conf.Axis_Thresh:  # side stick: center
+        plane_commands.right_ailerons = V_TRIState.MID
+        plane_commands.left_ailerons = V_TRIState.MID
+
+    # elevators control
+    if fjs_state.fjs_axes_state.side_stick_y > Conf.Axis_Thresh:  # side_stick: pull
+        plane_commands.elevators = V_TRIState.UP
+    elif fjs_state.fjs_axes_state.side_stick_y < -Conf.Axis_Thresh:  # side_stick: push
+        plane_commands.elevators = V_TRIState.DOWN
+    elif fjs_state.fjs_axes_state.side_stick_y > -Conf.Axis_Thresh and fjs_state.fjs_axes_state.side_stick_y < Conf.Axis_Thresh:  # side stick: center
+        plane_commands.elevators = V_TRIState.MID
+
+    # flaps control
+    _flaps_lever_primary = fjs_state.fjs_axes_state.flaps_lever_primary * -1 + 1
+    if _flaps_lever_primary < 0.4:      # flaps_lever: slat_1
+        plane_commands.flaps_deg = 0
+    elif _flaps_lever_primary < 0.8:    # flaps_lever: slat_2
+        plane_commands.flaps_deg = 10
+    elif _flaps_lever_primary < 1.2:    # flaps_lever: slat_3
+        plane_commands.flaps_deg = 15
+    elif _flaps_lever_primary < 1.6:    # flaps_lever: slat_4
+        plane_commands.flaps_deg = 20
+    elif _flaps_lever_primary > 1.6:    # flaps_lever: slat_5
+        plane_commands.flaps_deg = 35
+
+    # rudder control
+    if fjs_state.fjs_axes_state.rudder_twist > Conf.Axis_Thresh:  # rudder: right forward
+        plane_commands.rudder = R_TRIState.CCW
+    elif fjs_state.fjs_axes_state.rudder_twist < -Conf.Axis_Thresh:  # rudder: left forward
+        plane_commands.rudder = R_TRIState.CW
+    elif fjs_state.fjs_axes_state.rudder_twist > -Conf.Axis_Thresh and fjs_state.fjs_axes_state.rudder_twist < Conf.Axis_Thresh:  # rudder: center
+        plane_commands.rudder = R_TRIState.MID
+
+    # landing gear control
+    if sensors_state.levers_state.landing_gear_lever == V_TRIState.DOWN:
+        plane_commands.landing_gear = V_TRIState.DOWN
+    elif sensors_state.levers_state.landing_gear_lever in [V_TRIState.UP, V_TRIState.MID]:
+        plane_commands.landing_gear = V_TRIState.UP
+
+    def is_cruise() -> bool:
+        is_cruise_flag = True
+        is_cruise_flag &= plane_commands.right_ailerons == V_TRIState.MID
+        is_cruise_flag &= plane_commands.left_ailerons == V_TRIState.MID
+        is_cruise_flag &= plane_commands.elevators == V_TRIState.MID
+        is_cruise_flag &= plane_commands.rudder == R_TRIState.MID
+        is_cruise_flag &= plane_commands.landing_gear == V_TRIState.UP
+        return is_cruise_flag
+
+    def is_rolling(rolling_dir: Literal['RIGHT'] | Literal['LEFT']):
+        if rolling_dir == 'RIGHT':
+            return plane_commands.right_ailerons == V_TRIState.UP and plane_commands.left_ailerons == V_TRIState.DOWN
+        elif rolling_dir == 'LEFT':
+            return plane_commands.right_ailerons == V_TRIState.DOWN and plane_commands.left_ailerons == V_TRIState.UP
+
+    # spoilers control
+    if plane_commands.flaps_deg == 35:  # flaps: FULL
+        plane_commands.set_spoilers(0)
+
+    elif sensors_state.levers_state.spoilers_lever == V_TRIState.DOWN:  # spoilers_lever: RET
+        plane_commands.set_spoilers(0)
+
+    elif sensors_state.levers_state.spoilers_lever == V_TRIState.UP:  # spoilers_lever: FULL
+        if plane_commands.landing_gear == V_TRIState.DOWN:  # ground
+            plane_commands.set_spoilers(50)
+        elif plane_commands.landing_gear == V_TRIState.UP and is_cruise():  # cruise
+            plane_commands.set_spoilers(40)
+
+    elif sensors_state.levers_state.spoilers_lever == V_TRIState.MID:  # spoilers_lever: HALF
+        if plane_commands.landing_gear == V_TRIState.DOWN:  # landing
+            plane_commands.set_spoilers(25)
+        elif is_cruise():  # cruise
+            plane_commands.set_spoilers(20)
+        elif plane_commands.right_ailerons in [V_TRIState.UP, V_TRIState.DOWN]:  # rolling
+            if is_rolling('RIGHT'):  # left wing up
+                plane_commands.left_spoiler_deg = 0
+                plane_commands.right_spoiler_deg = 18
+            elif is_rolling('LEFT'):  # right_wing: up
+                plane_commands.right_spoiler_deg = 0
+                plane_commands.left_spoiler_deg = 18
+
+    # print(fjs_state.to_json_str())
+    # print(sensors_state.levers_state.to_json_str())
+    # print(plane_commands.to_json_str())
+
+    return plane_commands
 
 
-def send_plane_commands():
+def plane_control_loop(plane_commands: Plane_Commands, sensors_state: Sensors_State):
+    # TODO
     pass
 
 
@@ -84,6 +207,7 @@ def main():
     pygame.init()
     pygame.joystick.init()
     fjs_device = fjs_connect()
+    calibrate_controls(fjs_device)
 
     plane_mdbus_device = Plane_MDBus_Device(port_name='/dev/ttyS90', slave_id=0x01)
     plane_mdbus_device.connect()
@@ -94,9 +218,10 @@ def main():
         if fjs_state == None or sensors_state == None:
             sys.exit(1)
 
-        process_controls(fjs_state, sensors_state)
+        plane_commands = create_plane_commands(fjs_state, sensors_state)
+        plane_control_loop(plane_commands, sensors_state)
 
-        time.sleep(1)
+        time.sleep(0.05)
 
 
 if __name__ == "__main__":
