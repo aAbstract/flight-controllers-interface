@@ -1,3 +1,4 @@
+import struct
 import time
 import json
 from enum import IntEnum
@@ -7,6 +8,7 @@ from dataclasses import dataclass, asdict, field
 from ctypes import (
     CDLL,
     c_uint8,
+    c_uint16,
 )
 
 import conf
@@ -15,8 +17,8 @@ from libzcom_mdbus_ffi import _libs
 
 class V_TRIState(IntEnum):
     MID = 0
-    UP = 1
-    DOWN = 2
+    UP = 2
+    DOWN = 1
 
 
 @dataclass
@@ -108,23 +110,23 @@ class LVDTs_State:
 
     LVDTs_Idx_Map: ClassVar[dict[int, str]] = {
         0: 'ailerons_right_lvdt',
-        1: 'ailerons_left_lvdt',
-        2: 'elevators_lvdt',
-        3: 'flaps_right_lvdt',
+        3: 'ailerons_left_lvdt',
+        7: 'elevators_lvdt',
+        1: 'flaps_right_lvdt',
         4: 'flaps_left_lvdt',
-        5: 'rudder_lvdt',
-        6: 'spoilers_right_lvdt',
-        7: 'spoilers_left_lvdt',
+        6: 'rudder_lvdt',
+        2: 'spoilers_right_lvdt',
+        5: 'spoilers_left_lvdt',
     }
-    LVDTs_Max_Map: ClassVar[dict[str, int]] = {
-        'ailerons_right_lvdt': LVDT_Max_12b,
-        'ailerons_left_lvdt': LVDT_Max_12b,
-        'elevators_lvdt': LVDT_Max_12b,
-        'rudder_lvdt': LVDT_Max_12b,
-        'flaps_right_lvdt': LVDT_Max_16b,
-        'flaps_left_lvdt': LVDT_Max_16b,
-        'spoilers_right_lvdt': LVDT_Max_16b,
-        'spoilers_left_lvdt': LVDT_Max_16b,
+    LVDTs_Map: ClassVar[dict] = {
+        'ailerons_right_lvdt': lambda x: abs(x / 2000),
+        'ailerons_left_lvdt': lambda x: abs(x / 2000),
+        'elevators_lvdt': lambda x: abs((x + 350) / 16100),
+        'rudder_lvdt': lambda x: abs((x - 16250) / 16E3),
+        'flaps_right_lvdt': lambda x: abs((x - 150) / 950),
+        'flaps_left_lvdt': lambda x: abs((x - 4700) / 15200),
+        'spoilers_right_lvdt': lambda x: abs((x - 100) / 800),
+        'spoilers_left_lvdt': lambda x: abs((x + 100) / 8E3),
     }
 
     ailerons_right_lvdt: float = 0.0
@@ -139,9 +141,9 @@ class LVDTs_State:
     def __getattr__(self, name: str):
         if name.endswith('_norm'):
             lvdt_name = name.removesuffix('_norm') + '_lvdt'
-            lvdt_max = LVDTs_State.LVDTs_Max_Map.get(lvdt_name)
-            if lvdt_max is not None:
-                lvdt_norm = getattr(self, lvdt_name) / lvdt_max  # normalized lvdt reading
+            lvdt_map = LVDTs_State.LVDTs_Map.get(lvdt_name)
+            if lvdt_map is not None:
+                lvdt_norm = lvdt_map(getattr(self, lvdt_name))  # normalized lvdt reading
                 return lvdt_norm
             else:
                 raise AttributeError(name)
@@ -155,20 +157,16 @@ class LVDTs_State:
 @dataclass
 class Limit_Switches_State:
     Limit_Switches_Idx_Map: ClassVar[dict[int, str]] = {
-        0: 'landing_gear_front_limit_switch_1',
-        1: 'landing_gear_front_limit_switch_2',
-        2: 'landing_gear_mid_right_limit_switch_1',
-        3: 'landing_gear_mid_right_limit_switch_2',
-        4: 'landing_gear_mid_left_limit_switch_1',
-        5: 'landing_gear_mid_left_limit_switch_2',
+        0: 'landing_gear_front_gate_open',
+        1: 'landing_gear_front_gate_closed',
+        2: 'landing_gear_mid_right_gate_closed',
+        3: 'landing_gear_mid_right_gate_open',
     }
 
-    landing_gear_front_limit_switch_1: bool = False
-    landing_gear_front_limit_switch_2: bool = False
-    landing_gear_mid_right_limit_switch_1: bool = False
-    landing_gear_mid_right_limit_switch_2: bool = False
-    landing_gear_mid_left_limit_switch_1: bool = False
-    landing_gear_mid_left_limit_switch_2: bool = False
+    landing_gear_front_gate_open: bool = False
+    landing_gear_front_gate_closed: bool = False
+    landing_gear_mid_right_gate_closed: bool = False
+    landing_gear_mid_right_gate_open: bool = False
 
     def to_json_str(self):
         return json.dumps(asdict(self), indent=2)
@@ -185,8 +183,8 @@ class Valves_State:
         5: 'rudder_valve',
         6: 'spoilers_right_valve',
         7: 'spoilers_left_valve',
-        8: 'landing_gear_mid_valve',
-        9: 'landing_gear_front_valve',
+        8: 'landing_gear_gates',
+        9: 'landing_gear_wheels',
     }
 
     ailerons_right_valve: V_TRIState = V_TRIState.MID
@@ -197,8 +195,8 @@ class Valves_State:
     rudder_valve: V_TRIState = V_TRIState.MID
     spoilers_right_valve: V_TRIState = V_TRIState.MID
     spoilers_left_valve: V_TRIState = V_TRIState.MID
-    landing_gear_mid_valve: V_TRIState = V_TRIState.MID
-    landing_gear_front_valve: V_TRIState = V_TRIState.MID
+    landing_gear_gates: V_TRIState = V_TRIState.MID
+    landing_gear_wheels: V_TRIState = V_TRIState.MID
 
     def to_json_str(self):
         return json.dumps(asdict(self), indent=2)
@@ -207,8 +205,8 @@ class Valves_State:
 @dataclass
 class Levers_State:
     Levers_Idx_Map: ClassVar[dict[int, str]] = {
-        0: 'landing_gear_lever',
-        1: 'spoilers_lever',
+        0: 'spoilers_lever',
+        1: 'landing_gear_lever',
     }
 
     landing_gear_lever: V_TRIState = V_TRIState.MID
@@ -246,25 +244,25 @@ class Sensors_State:
         flaps_deg = max(flaps_right_deg, flaps_left_deg)
         return flaps_deg >= 0.8 * conf.Flaps_Max_Deg
 
-    def is_landing_gear_down(self) -> bool:
-        is_landing_gear_down_flag = True
-        is_landing_gear_down_flag &= not self.limit_switches_state.landing_gear_front_limit_switch_1
-        is_landing_gear_down_flag &= not self.limit_switches_state.landing_gear_front_limit_switch_2
-        is_landing_gear_down_flag &= not self.limit_switches_state.landing_gear_mid_right_limit_switch_1
-        is_landing_gear_down_flag &= not self.limit_switches_state.landing_gear_mid_right_limit_switch_2
-        is_landing_gear_down_flag &= not self.limit_switches_state.landing_gear_mid_left_limit_switch_1
-        is_landing_gear_down_flag &= not self.limit_switches_state.landing_gear_mid_left_limit_switch_2
-        return is_landing_gear_down_flag
+    # def is_lxanding_gear_down(self) -> bool:
+    #     is_lxanding_gear_down_flag = True
+    #     is_lxanding_gear_down_flag &= not self.limit_switches_state.lxanding_gear_front_limit_switch_1
+    #     is_lxanding_gear_down_flag &= not self.limit_switches_state.lxanding_gear_front_limit_switch_2
+    #     is_lxanding_gear_down_flag &= not self.limit_switches_state.lxanding_gear_mid_right_limit_switch_1
+    #     is_lxanding_gear_down_flag &= not self.limit_switches_state.lxanding_gear_mid_right_limit_switch_2
+    #     is_lxanding_gear_down_flag &= not self.limit_switches_state.lxanding_gear_mid_left_limit_switch_1
+    #     is_lxanding_gear_down_flag &= not self.limit_switches_state.lxanding_gear_mid_left_limit_switch_2
+    #     return is_lxanding_gear_down_flag
 
-    def is_landing_gear_up(self) -> bool:
-        is_landing_gear_up_flag = True
-        is_landing_gear_up_flag &= self.limit_switches_state.landing_gear_front_limit_switch_1
-        is_landing_gear_up_flag &= self.limit_switches_state.landing_gear_front_limit_switch_2
-        is_landing_gear_up_flag &= self.limit_switches_state.landing_gear_mid_right_limit_switch_1
-        is_landing_gear_up_flag &= self.limit_switches_state.landing_gear_mid_right_limit_switch_2
-        is_landing_gear_up_flag &= self.limit_switches_state.landing_gear_mid_left_limit_switch_1
-        is_landing_gear_up_flag &= self.limit_switches_state.landing_gear_mid_left_limit_switch_2
-        return is_landing_gear_up_flag
+    # def is_lxanding_gear_up(self) -> bool:
+    #     is_lxanding_gear_up_flag = True
+    #     is_lxanding_gear_up_flag &= self.limit_switches_state.lxanding_gear_front_limit_switch_1
+    #     is_lxanding_gear_up_flag &= self.limit_switches_state.lxanding_gear_front_limit_switch_2
+    #     is_lxanding_gear_up_flag &= self.limit_switches_state.lxanding_gear_mid_right_limit_switch_1
+    #     is_lxanding_gear_up_flag &= self.limit_switches_state.lxanding_gear_mid_right_limit_switch_2
+    #     is_lxanding_gear_up_flag &= self.limit_switches_state.lxanding_gear_mid_left_limit_switch_1
+    #     is_lxanding_gear_up_flag &= self.limit_switches_state.lxanding_gear_mid_left_limit_switch_2
+    #     return is_lxanding_gear_up_flag
 
     def to_json_str(self):
         return json.dumps(asdict(self), indent=2)
@@ -280,9 +278,7 @@ class Plane_Commands:
     rudder_deg: int = 0
     spoiler_right_deg: int = 0
     spoiler_left_deg: int = 0
-
-    landing_gear_mid: V_TRIState = V_TRIState.MID
-    landing_gear_front: V_TRIState = V_TRIState.MID
+    landing_gear: V_TRIState = V_TRIState.MID
 
     def set_flaps(self, deg: int):
         self.flaps_right_deg = deg
@@ -292,9 +288,9 @@ class Plane_Commands:
         self.spoiler_right_deg = deg
         self.spoiler_left_deg = deg
 
-    def set_landing_gear(self, pos: V_TRIState):
-        self.landing_gear_mid = pos
-        self.landing_gear_front = pos
+    # def set_lxanding_gear(self, pos: V_TRIState):
+    #     self.lxanding_gear_mid = pos
+    #     self.lxanding_gear_front = pos
 
     def to_json_str(self):
         return json.dumps(asdict(self), indent=2)
@@ -345,7 +341,7 @@ class Plane_MDBus_Device:
 
     def _mdbus_read_req(self, address: int, word_cnt: int) -> bytes:
         mdbus_rreq = (c_uint8 * 8)()
-        self.libzcom.mdbus_encode_read_input_regs(address, word_cnt, mdbus_rreq)
+        self.libzcom.mdbus_encode_read_holding_regs(address, word_cnt, mdbus_rreq)
         mdbus_rreq = bytes(mdbus_rreq)
         Plane_MDBus_Device.dlog('MDBus_READ_REQ -> ' + Plane_MDBus_Device.fmt_pkt_hex(mdbus_rreq))
         self.serial_port.write(mdbus_rreq)
@@ -364,6 +360,18 @@ class Plane_MDBus_Device:
         data_payload = mdbus_rres[3:-2]
         return data_payload
 
+    def _mdbus_write_req(self, address: int, word_list: list[int]):
+        word_cnt = len(word_list)
+        word_buffer = (c_uint16 * word_cnt)(*word_list)
+
+        mdbus_wreq = (c_uint8 * (9 + word_cnt * 2))()
+        self.libzcom.mdbus_encode_write_regs(address, word_buffer, len(word_buffer), mdbus_wreq)
+        mdbus_wreq = bytes(mdbus_wreq)
+        Plane_MDBus_Device.dlog('MDBus_WRITE_REQ -> ' + Plane_MDBus_Device.fmt_pkt_hex(mdbus_wreq))
+        self.serial_port.write(mdbus_wreq)
+        mdbus_wres = self.serial_port.read(8)
+        Plane_MDBus_Device.dlog('MDBus_WRITE_RES -> ' + Plane_MDBus_Device.fmt_pkt_hex(mdbus_wres))
+
     def load_lvdts(self) -> LVDTs_State:
         if not self.serial_port:
             Plane_MDBus_Device.elog('Device is not Connected')
@@ -381,7 +389,7 @@ class Plane_MDBus_Device:
                 continue
 
             word = bytes([lvdts_payload[2 * i], lvdts_payload[2 * i + 1]])
-            lvdt_adc = int.from_bytes(word, 'big')
+            lvdt_adc = struct.unpack('>h', word)[0]
             lvdts_state[lvdt_name] = lvdt_adc
 
         return LVDTs_State(**lvdts_state)
@@ -397,7 +405,7 @@ class Plane_MDBus_Device:
             return None
 
         limit_switches_word = int.from_bytes(limit_switches_payload, 'big')
-        limit_switches_bits = f"{limit_switches_word:016b}"[-6:][::-1]
+        limit_switches_bits = f"{limit_switches_word:016b}"[-4:][::-1]
         limit_switches_state = {}
         for i, b in enumerate(limit_switches_bits):
             limit_switch_name = Limit_Switches_State.Limit_Switches_Idx_Map.get(i)
@@ -430,6 +438,31 @@ class Plane_MDBus_Device:
 
         return Valves_State(**valves_state)
 
+    def write_valves(self, valves_state: Valves_State):
+        if not self.serial_port:
+            Plane_MDBus_Device.elog('Device is not Connected')
+            return None
+
+        __vl = [0] * 10
+
+        __vl[4] = valves_state.ailerons_right_valve
+        __vl[7] = valves_state.ailerons_left_valve
+
+        __vl[1] = valves_state.elevators_valve
+
+        __vl[2] = valves_state.flaps_right_valve
+        __vl[5] = valves_state.flaps_left_valve
+
+        __vl[0] = valves_state.rudder_valve.value
+
+        __vl[3] = valves_state.spoilers_right_valve.value
+        __vl[6] = valves_state.spoilers_left_valve.value
+
+        __vl[8] = valves_state.landing_gear_gates.value
+        __vl[9] = valves_state.landing_gear_wheels.value
+
+        self._mdbus_write_req(4105, __vl)
+
     def load_levers(self) -> Levers_State:
         if not self.serial_port:
             Plane_MDBus_Device.elog('Device is not Connected')
@@ -454,7 +487,7 @@ class Plane_MDBus_Device:
 
 
 class Log:
-    DEBUG = True
+    DEBUG = False
 
     @staticmethod
     def ilog(msg: str):

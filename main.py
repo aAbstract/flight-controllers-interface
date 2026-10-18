@@ -10,6 +10,7 @@ from lib import (
     FJS_Hats_State,
 
     Sensors_State,
+    Valves_State,
 
     Plane_MDBus_Device,
     Plane_Commands,
@@ -101,9 +102,9 @@ def capture_sensors(plane_mdbus_device: Plane_MDBus_Device) -> Sensors_State:
     if not limit_switches_state:
         return None
 
-    valves_state = plane_mdbus_device.load_valves()
-    if not valves_state:
-        return None
+    # valves_state = plane_mdbus_device.load_valves()
+    # if not valves_state:
+    #     return None
 
     levers_state = plane_mdbus_device.load_levers()
     if not levers_state:
@@ -113,7 +114,7 @@ def capture_sensors(plane_mdbus_device: Plane_MDBus_Device) -> Sensors_State:
         timestamp_ms=Clock.get_time_ms(),
         lvdts_state=lvdts_state,
         limit_switches_state=limit_switches_state,
-        valves_state=valves_state,
+        # valves_state=valves_state,
         levers_state=levers_state,
     )
 
@@ -140,12 +141,13 @@ def create_plane_commands(fjs_state: FJS_State, sensors_state: Sensors_State) ->
         plane_commands.elevators_deg = int(elevators_deg)
 
     # flaps commands
-    flaps_lever_primary_norm = (fjs_state.fjs_axes_state.flaps_lever_primary * -1 + 1) / 2  # [0, 1]
-    if flaps_lever_primary_norm > conf.Axis_Thresh:  # flaps_lever_primary: forward
+    flaps_lever_primary_norm = fjs_state.fjs_axes_state.flaps_lever_primary  # [-1, 1]
+    # flaps_lever_primary_norm = (fjs_state.fjs_axes_state.flaps_lever_primary * -1 + 1) / 2  # [0, 1]
+    if flaps_lever_primary_norm > -conf.Axis_Thresh and flaps_lever_primary_norm < conf.Axis_Thresh:  # flaps_lever_primary: forward
+        plane_commands.set_flaps(0)
+    else:
         flaps_deg = flaps_lever_primary_norm * conf.Flaps_Max_Deg
         plane_commands.set_flaps(int(flaps_deg))
-    else:
-        plane_commands.set_flaps(0)
 
     # rudder commands
     rudder_twist_norm = fjs_state.fjs_axes_state.rudder_twist  # [-1, 1]
@@ -156,47 +158,135 @@ def create_plane_commands(fjs_state: FJS_State, sensors_state: Sensors_State) ->
         plane_commands.rudder_deg = int(rudder_deg)
 
     # landing gear commands
-    if sensors_state.levers_state.landing_gear_lever == V_TRIState.DOWN:
-        plane_commands.set_landing_gear(V_TRIState.DOWN)
-    elif sensors_state.levers_state.landing_gear_lever in [V_TRIState.UP, V_TRIState.MID]:
-        plane_commands.set_landing_gear(V_TRIState.UP)
+    plane_commands.landing_gear = sensors_state.levers_state.landing_gear_lever
 
     # spoilers commands
-    if sensors_state.is_flaps_full():
-        plane_commands.set_spoilers(0)
+    # if sensors_state.is_flaps_full():
+    #     plane_commands.set_spoilers(0)
 
-    elif sensors_state.levers_state.spoilers_lever == V_TRIState.DOWN:  # spoilers_lever: RET
+    if sensors_state.levers_state.spoilers_lever == V_TRIState.DOWN:  # spoilers_lever: RET
         plane_commands.set_spoilers(0)
 
     elif sensors_state.levers_state.spoilers_lever == V_TRIState.UP:  # spoilers_lever: FULL
-        if sensors_state.is_landing_gear_down():
-            plane_commands.set_spoilers(50)
-        elif sensors_state.is_cruise() and sensors_state.is_landing_gear_up():  # cruise
-            plane_commands.set_spoilers(40)
+        plane_commands.set_spoilers(50)
+        # if sensors_state.is_lxanding_gear_down():
+        #     plane_commands.set_spoilers(50)
+        # elif sensors_state.is_cruise() and sensors_state.is_lxanding_gear_up():  # cruise
+        #     plane_commands.set_spoilers(40)
 
     elif sensors_state.levers_state.spoilers_lever == V_TRIState.MID:  # spoilers_lever: HALF
-        if sensors_state.is_landing_gear_down():  # landing
-            plane_commands.set_spoilers(25)
-        elif sensors_state.is_cruise():  # cruise
-            plane_commands.set_spoilers(20)
-        elif sensors_state.is_rolling('RIGHT') or sensors_state.is_rolling('LEFT'):  # rolling
-            if sensors_state.is_rolling('RIGHT'):  # left wing up
-                plane_commands.spoiler_right_deg = 18
-                plane_commands.spoiler_left_deg = 0
-            elif sensors_state.is_rolling('LEFT'):  # right_wing: up
-                plane_commands.spoiler_right_deg = 0
-                plane_commands.spoiler_left_deg = 18
+        plane_commands.set_spoilers(25)
+        # if sensors_state.is_lxanding_gear_down():  # landing
+        #     plane_commands.set_spoilers(25)
+        # elif sensors_state.is_cruise():  # cruise
+        #     plane_commands.set_spoilers(20)
+        # elif sensors_state.is_rolling('RIGHT') or sensors_state.is_rolling('LEFT'):  # rolling
+        #     if sensors_state.is_rolling('RIGHT'):  # left wing up
+        #         plane_commands.spoiler_right_deg = 18
+        #         plane_commands.spoiler_left_deg = 0
+        #     elif sensors_state.is_rolling('LEFT'):  # right_wing: up
+        #         plane_commands.spoiler_right_deg = 0
+        #         plane_commands.spoiler_left_deg = 18
 
     # print(fjs_state.fjs_axes_state.to_json_str())
-    # print(sensors_state.to_json_str())
+    # print(sensors_state.lvdts_state.to_json_str())
     # print(plane_commands.to_json_str())
 
     return plane_commands
 
 
-def plane_control_loop(plane_commands: Plane_Commands, sensors_state: Sensors_State):
-    # TODO: ailerons control loop
-    pass
+def plane_control_loop(plane_commands: Plane_Commands, sensors_state: Sensors_State) -> Valves_State:
+    valves_state = Valves_State()
+
+    # ailerons control loop
+    if plane_commands.ailerons_right_deg > -(conf.Ailerons_Max_Deg // 2) and plane_commands.ailerons_right_deg < (conf.Ailerons_Max_Deg // 2):
+        valves_state.ailerons_right_valve = V_TRIState.MID
+    elif plane_commands.ailerons_right_deg > (conf.Ailerons_Max_Deg // 2) and sensors_state.lvdts_state.ailerons_right_norm > conf.LVDT_Norm_Low_Thresh:
+        valves_state.ailerons_right_valve = V_TRIState.UP
+    elif plane_commands.ailerons_right_deg < -(conf.Ailerons_Max_Deg // 2) and sensors_state.lvdts_state.ailerons_right_norm < conf.LVDT_Norm_High_Thresh:
+        valves_state.ailerons_right_valve = V_TRIState.DOWN
+    else:
+        valves_state.ailerons_right_valve = V_TRIState.MID
+    if plane_commands.ailerons_left_deg > -(conf.Ailerons_Max_Deg // 2) and plane_commands.ailerons_left_deg < (conf.Ailerons_Max_Deg // 2):
+        valves_state.ailerons_left_valve = V_TRIState.MID
+    elif plane_commands.ailerons_left_deg > (conf.Ailerons_Max_Deg // 2) and sensors_state.lvdts_state.ailerons_left_norm > conf.LVDT_Norm_Low_Thresh:
+        valves_state.ailerons_left_valve = V_TRIState.UP
+    elif plane_commands.ailerons_left_deg < -(conf.Ailerons_Max_Deg // 2) and sensors_state.lvdts_state.ailerons_left_norm < conf.LVDT_Norm_High_Thresh:
+        valves_state.ailerons_left_valve = V_TRIState.DOWN
+    else:
+        valves_state.ailerons_left_valve = V_TRIState.MID
+
+    # elevators control loop
+    if plane_commands.elevators_deg > -(conf.Elevators_Max_Deg // 2) and plane_commands.elevators_deg < (conf.Elevators_Max_Deg // 2):
+        valves_state.elevators_valve = V_TRIState.MID
+    elif plane_commands.elevators_deg > (conf.Elevators_Max_Deg // 2) and sensors_state.lvdts_state.elevators_norm > conf.LVDT_Norm_Low_Thresh:
+        valves_state.elevators_valve = V_TRIState.DOWN
+    elif plane_commands.elevators_deg < -(conf.Elevators_Max_Deg // 2) and sensors_state.lvdts_state.elevators_norm < conf.LVDT_Norm_High_Thresh:
+        valves_state.elevators_valve = V_TRIState.UP
+    else:
+        valves_state.elevators_valve = V_TRIState.MID
+
+    # flaps control loop
+    if plane_commands.flaps_right_deg > -(conf.Flaps_Max_Deg // 2) and plane_commands.flaps_right_deg < (conf.Flaps_Max_Deg // 2):
+        valves_state.flaps_right_valve = V_TRIState.MID
+    elif plane_commands.flaps_right_deg > (conf.Flaps_Max_Deg // 2) and sensors_state.lvdts_state.flaps_right_norm < conf.LVDT_Norm_High_Thresh:
+        valves_state.flaps_right_valve = V_TRIState.DOWN
+    elif plane_commands.flaps_right_deg < -(conf.Flaps_Max_Deg // 2) and sensors_state.lvdts_state.flaps_right_norm > conf.LVDT_Norm_Low_Thresh:
+        valves_state.flaps_right_valve = V_TRIState.UP
+    else:
+        valves_state.flaps_right_valve = V_TRIState.MID
+    if plane_commands.flaps_left_deg > -(conf.Flaps_Max_Deg // 2) and plane_commands.flaps_left_deg < (conf.Flaps_Max_Deg // 2):
+        valves_state.flaps_left_valve = V_TRIState.MID
+    elif plane_commands.flaps_left_deg > (conf.Flaps_Max_Deg // 2) and sensors_state.lvdts_state.flaps_left_norm < conf.LVDT_Norm_High_Thresh:
+        valves_state.flaps_left_valve = V_TRIState.DOWN
+    elif plane_commands.flaps_left_deg < -(conf.Flaps_Max_Deg // 2) and sensors_state.lvdts_state.flaps_left_norm > conf.LVDT_Norm_Low_Thresh:
+        valves_state.flaps_left_valve = V_TRIState.UP
+    else:
+        valves_state.flaps_left_valve = V_TRIState.MID
+
+    # rudder control loop
+    if plane_commands.rudder_deg > -(conf.Rudder_Max_Deg // 2) and plane_commands.rudder_deg < (conf.Rudder_Max_Deg // 2):
+        valves_state.rudder_valve = V_TRIState.MID
+    elif plane_commands.rudder_deg > (conf.Rudder_Max_Deg // 2) and sensors_state.lvdts_state.rudder_norm > conf.LVDT_Norm_Low_Thresh:
+        valves_state.rudder_valve = V_TRIState.UP
+    elif plane_commands.rudder_deg < -(conf.Rudder_Max_Deg // 2) and sensors_state.lvdts_state.rudder_norm < conf.LVDT_Norm_High_Thresh:
+        valves_state.rudder_valve = V_TRIState.DOWN
+    else:
+        valves_state.rudder_valve = V_TRIState.MID
+
+    # landing gear control loop
+    # valves_state.landing_gear_gates = plane_commands.landing_gear
+    valves_state.landing_gear_wheels = plane_commands.landing_gear
+
+    # spoilers control loop
+    if plane_commands.spoiler_right_deg == 0 and sensors_state.lvdts_state.spoilers_right_norm > conf.LVDT_Norm_Low_Thresh:
+        valves_state.spoilers_right_valve = V_TRIState.DOWN
+    elif plane_commands.spoiler_right_deg >= 40 and sensors_state.lvdts_state.spoilers_right_norm < conf.LVDT_Norm_High_Thresh:
+        valves_state.spoilers_right_valve = V_TRIState.UP
+    elif plane_commands.spoiler_right_deg in [20, 25]:
+        valves_state.spoilers_right_valve = V_TRIState.MID
+    else:
+        valves_state.spoilers_right_valve = V_TRIState.MID
+    if plane_commands.spoiler_left_deg == 0 and sensors_state.lvdts_state.spoilers_left_norm > conf.LVDT_Norm_Low_Thresh:
+        valves_state.spoilers_left_valve = V_TRIState.DOWN
+    elif plane_commands.spoiler_left_deg >= 40 and sensors_state.lvdts_state.spoilers_left_norm < conf.LVDT_Norm_High_Thresh:
+        valves_state.spoilers_left_valve = V_TRIState.UP
+    elif plane_commands.spoiler_left_deg in [20, 25]:
+        valves_state.spoilers_left_valve = V_TRIState.MID
+    else:
+        valves_state.spoilers_left_valve = V_TRIState.MID
+
+    # print(sensors_state.lvdts_state.ailerons_right_norm, sensors_state.lvdts_state.ailerons_left_norm)
+    # print(plane_commands.ailerons_right_deg)
+    # print(plane_commands.rudder_deg)
+    # print(plane_commands.spoiler_right_deg, plane_commands.spoiler_left_deg)
+    # print(valves_state.spoilers_right_valve, valves_state.spoilers_left_valve)
+
+    return valves_state
+
+
+def plane_send_valves(plane_mdbus_device: Plane_MDBus_Device, valves_state: Valves_State):
+    plane_mdbus_device.write_valves(valves_state)
 
 
 def main():
@@ -207,6 +297,9 @@ def main():
     plane_mdbus_device = Plane_MDBus_Device(port_name=conf.Plane_MDBus_Port, slave_id=conf.Plane_MDBus_Slave_ID)
     plane_mdbus_device.connect()
 
+    # set software ON indicator
+    plane_mdbus_device._mdbus_write_req(4117, [1])
+
     while True:
         fjs_state = capture_controls(fjs_device)
         sensors_state = capture_sensors(plane_mdbus_device)
@@ -214,7 +307,8 @@ def main():
             sys.exit(1)
 
         plane_commands = create_plane_commands(fjs_state, sensors_state)
-        plane_control_loop(plane_commands, sensors_state)
+        valves_state = plane_control_loop(plane_commands, sensors_state)
+        plane_send_valves(plane_mdbus_device, valves_state)
 
         time.sleep(0.05)
 
